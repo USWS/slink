@@ -6,6 +6,7 @@ import (
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"github.com/satori/go.uuid"
 	"log"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 const (
 	ServiceUp        = "usws/svc/up"
+	ServiceRpcUp     = "usws/rpc/up"
 	ServiceRpcIn     = "usws/rpc/in"
 	ServiceRpcOut    = "usws/rpc/out"
 	RecyleDuration   = time.Second * 5
@@ -27,6 +29,7 @@ type SLink struct {
 	password  string
 	keepAlive time.Duration
 	deadTime  time.Duration
+	uuid      string
 }
 
 func New(host string) *SLink {
@@ -34,6 +37,7 @@ func New(host string) *SLink {
 		host:      host,
 		keepAlive: DefaultKeepAlive,
 		deadTime:  DefaultDeadTime,
+		uuid:      uuid.NewV4().String(),
 	}
 }
 
@@ -85,7 +89,7 @@ type ServiceGetter func() *ServiceInfo
 type OnServiceUp func(p *ServiceInfo)
 
 func (p *SLink) SetOnServiceUp(serviceName string, onServiceUp OnServiceUp) (ServiceGetter, error) {
-	var pIsInfo *innerServiceInfo
+	services := make(map[string]*innerServiceInfo)
 	lock := new(sync.RWMutex)
 
 	if token := p.client.Subscribe(ServiceUp+"/"+serviceName, 0, func(client MQTT.Client, message MQTT.Message) {
@@ -95,29 +99,57 @@ func (p *SLink) SetOnServiceUp(serviceName string, onServiceUp OnServiceUp) (Ser
 			return
 		}
 		lock.Lock()
-		isInfo.upTime = time.Now()
-		pIsInfo = &isInfo
+		if svc, ok := services[isInfo.UUID]; ok {
+			svc.upTime = time.Now()
+		} else {
+			isInfo.upTime = time.Now()
+			services[isInfo.UUID] = &isInfo
+		}
 		if onServiceUp != nil {
-			go onServiceUp(&pIsInfo.SvcInfo)
+			go onServiceUp(&services[isInfo.UUID].SvcInfo)
 		}
 		lock.Unlock()
 	}); token.Wait() && token.Error() != nil {
 		return nil, token.Error()
 	}
-	return func() *ServiceInfo {
-		lock.RLock()
-		defer lock.RUnlock()
-		if pIsInfo == nil || time.Now().After(pIsInfo.upTime.Add(p.deadTime)) {
-			return nil
+
+	go func() {
+		for {
+			time.Sleep(RecyleDuration)
+			lock.Lock()
+			now := time.Now()
+			for k, v := range services {
+				if now.After(v.upTime.Add(DefaultDeadTime)) {
+					delete(services, k)
+				}
+			}
+			lock.Unlock()
 		}
-		return &pIsInfo.SvcInfo
+	}()
+
+	return func() *ServiceInfo {
+		validSvc := make([]*innerServiceInfo, 0, 4)
+		now := time.Now()
+		lock.RLock()
+		for _, v := range services {
+			if !now.After(v.upTime.Add(DefaultDeadTime)) {
+				validSvc = append(validSvc, v)
+			}
+		}
+		lock.RUnlock()
+		n := len(validSvc)
+		if n < 1 {
+			return nil
+		} else {
+			return &validSvc[rand.Intn(n)].SvcInfo
+		}
 	}, nil
 }
 
 func (p *SLink) ProvideService(sInfo *ServiceInfo) {
 	go func() {
 		isInfo := innerServiceInfo{
-			UUID:    uuid.NewV4().String(),
+			UUID:    p.uuid,
 			SvcInfo: *sInfo,
 		}
 		bInfo, err := json.Marshal(isInfo)
@@ -135,12 +167,18 @@ func (p *SLink) ProvideService(sInfo *ServiceInfo) {
 
 type MethodRequest func(param string) (string, error)
 type Register func(method string, f MethodRequest)
+type rpcSeverInfo struct {
+	UUID   string `json:"u"`
+	Name   string `json:"n"`
+	upTime time.Time
+}
 
 func (p *SLink) InitRpcServer(serviceName string) (Register, error) {
 	methods := make(map[string]MethodRequest)
 	lock := new(sync.Mutex)
+	svcUUID := p.uuid
 
-	if token := p.client.Subscribe(ServiceRpcIn+"/"+serviceName, 0, func(client MQTT.Client, message MQTT.Message) {
+	if token := p.client.Subscribe(ServiceRpcIn+"/"+serviceName+"/"+svcUUID, 0, func(client MQTT.Client, message MQTT.Message) {
 		var cParam clientInvokeParam
 		if err := json.Unmarshal(message.Payload(), &cParam); err != nil {
 			log.Println(err)
@@ -174,6 +212,25 @@ func (p *SLink) InitRpcServer(serviceName string) (Register, error) {
 		return nil, token.Error()
 	}
 
+	go func() {
+		for {
+			rpcSvr := rpcSeverInfo{
+				UUID: svcUUID,
+				Name: serviceName,
+			}
+			bInfo, err := json.Marshal(rpcSvr)
+			if err != nil {
+				panic(err)
+			}
+			for {
+				if token := p.client.Publish(ServiceRpcUp+"/"+serviceName, 0, false, string(bInfo)); token.Wait() && token.Error() != nil {
+					log.Println(token.Error())
+				}
+				time.Sleep(p.keepAlive)
+			}
+		}
+	}()
+
 	return func(method string, f MethodRequest) {
 		lock.Lock()
 		if _, ok := methods[method]; !ok {
@@ -184,9 +241,8 @@ func (p *SLink) InitRpcServer(serviceName string) (Register, error) {
 }
 
 type InvokeParam struct {
-	ServiceName string `json:"n"`
-	Method      string `json:"m"`
-	Param       string `json:"p"`
+	Method string `json:"m"`
+	Param  string `json:"p"`
 }
 type clientInvokeParam struct {
 	ReqId       int64       `json:"i"`
@@ -206,11 +262,33 @@ type timeOuter struct {
 	Timeout time.Duration
 }
 
-func (p *SLink) InitRpcClient() (Invoker, error) {
+func (p *SLink) InitRpcClient(serviceName string) (Invoker, error) {
 	var reqId int64 = 0
 	callbacks := make(map[int64]*timeOuter)
 	lock := new(sync.Mutex)
 	clientTopic := ServiceRpcOut + "/" + uuid.NewV4().String()
+	rpcSvcs := make(map[string]*rpcSeverInfo)
+	svcLock := new(sync.RWMutex)
+
+	if token := p.client.Subscribe(ServiceRpcUp+"/"+serviceName, 0, func(client MQTT.Client, message MQTT.Message) {
+		var rsi rpcSeverInfo
+		if err := json.Unmarshal(message.Payload(), &rsi); err != nil {
+			log.Println(err)
+			return
+		}
+		svcLock.Lock()
+		if svc, ok := rpcSvcs[rsi.UUID]; ok {
+			svc.upTime = time.Now()
+		} else {
+			rsi.upTime = time.Now()
+			rpcSvcs[rsi.UUID] = &rsi
+		}
+		svcLock.Unlock()
+		log.Println("...", clientTopic)
+	}); token.Wait() && token.Error() != nil {
+		log.Println(token.Error())
+		return nil, token.Error()
+	}
 
 	if token := p.client.Subscribe(clientTopic, 0, func(client MQTT.Client, message MQTT.Message) {
 		var iInParam serverReturnParam
@@ -246,9 +324,36 @@ func (p *SLink) InitRpcClient() (Invoker, error) {
 			}
 		}
 		lock.Unlock()
+		svcLock.Lock()
+		for k, v := range rpcSvcs {
+			if now.After(v.upTime.Add(DefaultDeadTime)) {
+				delete(rpcSvcs, k)
+			}
+		}
+		svcLock.Unlock()
 	}()
 
 	return func(param *InvokeParam, on OnResult, timeout time.Duration) error {
+		var rpcSvc *rpcSeverInfo
+		validSvcs := make([]*rpcSeverInfo, 0, 4)
+		now := time.Now()
+
+		svcLock.RLock()
+		for _, v := range rpcSvcs {
+			if now.After(v.upTime.Add(DefaultDeadTime)) {
+				continue
+			} else {
+				validSvcs = append(validSvcs, v)
+			}
+		}
+		svcLock.RUnlock()
+		n := len(validSvcs)
+		if n < 1 {
+			return errors.New("no service found")
+		} else {
+			rpcSvc = validSvcs[rand.Intn(n)]
+		}
+
 		id := atomic.AddInt64(&reqId, 1)
 		iParam := clientInvokeParam{
 			ReqId:       id,
@@ -266,7 +371,7 @@ func (p *SLink) InitRpcClient() (Invoker, error) {
 			Timeout: timeout,
 		}
 		lock.Unlock()
-		if token := p.client.Publish(ServiceRpcIn+"/"+param.ServiceName, 0, false, jStr); token.Wait() && token.Error() != nil {
+		if token := p.client.Publish(ServiceRpcIn+"/"+serviceName+"/"+rpcSvc.UUID, 0, false, jStr); token.Wait() && token.Error() != nil {
 			return token.Error()
 		}
 		return nil

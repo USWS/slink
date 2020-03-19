@@ -41,7 +41,7 @@ go get "github.com/USWS/slink"
 ## RPC
 
 	//RPC service provide side：
-	Register, err := slk.InitRpcServer("service_name")
+	Register, err := slk.InitRpcServer("service1")
 	if err != nil {
 	   panic(err)
 	}
@@ -59,15 +59,14 @@ go get "github.com/USWS/slink"
 	})
 
 	//RPC client side：
-	Invoker, err := slk.InitRpcClient()
+	Service1Invoker, err := slk.InitRpcClient("service1")
 	if err != nil {
 	   panic(err)
 	}
 
 	go func() {
 	   for {
-	      if err := Invoker(&slink.InvokeParam{
-	         ServiceName: "service_name",
+	      if err := Service1Invoker(&slink.InvokeParam{
 	         Method:      "method_name_1",
 	         Param:       `json string`,
 	      }, func(result string, err error) {
