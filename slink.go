@@ -284,7 +284,6 @@ func (p *SLink) InitRpcClient(serviceName string) (Invoker, error) {
 			rpcSvcs[rsi.UUID] = &rsi
 		}
 		svcLock.Unlock()
-		log.Println("...", clientTopic)
 	}); token.Wait() && token.Error() != nil {
 		log.Println(token.Error())
 		return nil, token.Error()
