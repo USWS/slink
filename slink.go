@@ -406,6 +406,37 @@ func (p *SLink) Subscribe(topic string, th TopicHandler) error {
 	return nil
 }
 
+type MultiSubscribe struct {
+	Subscribe   func(lis TopicHandler)
+	Unsubscribe func(lis TopicHandler)
+}
+
+func (p *SLink) MakeMultiSubscribe(topic string) (*MultiSubscribe, error) {
+	liss := make(map[*TopicHandler]bool)
+	lock := new(sync.RWMutex)
+	if token := p.client.Subscribe(ServiceTopic+"/"+topic, 0, func(client MQTT.Client, message MQTT.Message) {
+		lock.RLock()
+		for k, _ := range liss {
+			go (*k)(message.Payload())
+		}
+		lock.RUnlock()
+	}); token.Wait() && token.Error() != nil {
+		return nil, token.Error()
+	}
+	return &MultiSubscribe{
+		Subscribe: func(lis TopicHandler) {
+			lock.Lock()
+			liss[&lis] = true
+			lock.Unlock()
+		},
+		Unsubscribe: func(lis TopicHandler) {
+			lock.Lock()
+			delete(liss, &lis)
+			lock.Unlock()
+		},
+	}, nil
+}
+
 func (p *SLink) Unsubscribe(topic string) error {
 	if token := p.client.Unsubscribe(ServiceTopic + "/" + topic); token.Wait() && token.Error() != nil {
 		return token.Error()
@@ -418,4 +449,16 @@ func (p *SLink) Publish(topic string, msg string) error {
 		return token.Error()
 	}
 	return nil
+}
+
+func (p *SLink) NewRpcClients(svcnames []string) (map[string]Invoker, error) {
+	clients := make(map[string]Invoker)
+	for _, v := range svcnames {
+		if c, err := p.InitRpcClient(v); err != nil {
+			return nil, err
+		} else {
+			clients[v] = c
+		}
+	}
+	return clients, nil
 }

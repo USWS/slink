@@ -85,6 +85,23 @@ go get "github.com/USWS/slink"
        log.Println(err)
     }
 
+    //multi clients
+    if clis, err := slk.NewRpcClients([]string{
+       "svc1", "svc2", "svc3",
+    }); err != nil {
+       log.Println(err)
+    } else {
+       if err := clis["svc1"](&slink.InvokeParam{
+	      Method: "GetName",
+	      Param:  "",
+       }, func(result string, err error) {
+	      log.Println(result, err)
+       }, time.Second*5); err != nil {
+	      log.Println(err)
+       }
+    }
+
+
 ## Subscribe & Publish
 
     if err := slk.Subscribe("abc", func(msg []byte) {
@@ -93,6 +110,17 @@ go get "github.com/USWS/slink"
 		panic(err)
 	}
 
-    if err := dis.Publish("abc", "123"); err != nil {
+    if err := slk.Publish("abc", "123"); err != nil {
        log.Println(err)
+    }
+
+    if mul, err := slk.MakeMultiSubscribe("topic"); err != nil {
+       log.Println(err)
+    } else {
+       mul.Subscribe(func(msg []byte) {
+          log.Println(string(msg))
+       })
+       mul.Subscribe(func(msg []byte) {
+          log.Println(string(msg))
+       })
     }
