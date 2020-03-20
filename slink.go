@@ -17,6 +17,7 @@ const (
 	ServiceRpcUp     = "usws/rpc/up"
 	ServiceRpcIn     = "usws/rpc/in"
 	ServiceRpcOut    = "usws/rpc/out"
+	ServiceTopic     = "usws/com"
 	RecyleDuration   = time.Second * 5
 	DefaultKeepAlive = time.Second * 5
 	DefaultDeadTime  = time.Second * 15
@@ -51,16 +52,19 @@ func (p *SLink) SetPassword(password string) *SLink {
 	return p
 }
 
+func (p *SLink) GetClient() MQTT.Client {
+	return p.client
+}
+
 func (p *SLink) Connect() (MQTT.Client, error) {
 	opts := MQTT.NewClientOptions().AddBroker(p.host)
 	opts.SetUsername(p.user)
 	opts.SetPassword(p.password)
-	c := MQTT.NewClient(opts)
-	if token := c.Connect(); token.Wait() && token.Error() != nil {
+	p.client = MQTT.NewClient(opts)
+	if token := p.client.Connect(); token.Wait() && token.Error() != nil {
 		return nil, token.Error()
 	}
-	p.client = c
-	return c, nil
+	return p.client, nil
 }
 
 type ServiceInfo struct {
@@ -262,6 +266,20 @@ type timeOuter struct {
 	Timeout time.Duration
 }
 
+func SyncInvoker(invoker Invoker, param *InvokeParam, on OnResult, timeout time.Duration) error {
+	ch := make(chan bool)
+	if err := invoker(param, func(result string, err error) {
+		on(result, err)
+		ch <- true
+	}, timeout); err != nil {
+		close(ch)
+		return err
+	}
+	<-ch
+	close(ch)
+	return nil
+}
+
 func (p *SLink) InitRpcClient(serviceName string) (Invoker, error) {
 	var reqId int64 = 0
 	callbacks := make(map[int64]*timeOuter)
@@ -375,4 +393,29 @@ func (p *SLink) InitRpcClient(serviceName string) (Invoker, error) {
 		}
 		return nil
 	}, nil
+}
+
+type TopicHandler func(msg []byte)
+
+func (p *SLink) Subscribe(topic string, th TopicHandler) error {
+	if token := p.client.Subscribe(ServiceTopic+"/"+topic, 0, func(client MQTT.Client, message MQTT.Message) {
+		go th(message.Payload())
+	}); token.Wait() && token.Error() != nil {
+		return token.Error()
+	}
+	return nil
+}
+
+func (p *SLink) Unsubscribe(topic string) error {
+	if token := p.client.Unsubscribe(ServiceTopic + "/" + topic); token.Wait() && token.Error() != nil {
+		return token.Error()
+	}
+	return nil
+}
+
+func (p *SLink) Publish(topic string, msg string) error {
+	if token := p.client.Publish(ServiceTopic+"/"+topic, 0, false, msg); token.Wait() && token.Error() != nil {
+		return token.Error()
+	}
+	return nil
 }

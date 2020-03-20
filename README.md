@@ -8,6 +8,7 @@ go get "github.com/USWS/slink"
 
 1. Service discovery
 1. RPC
+2. Subscribe & Publish
 
 ## Connect
 
@@ -64,16 +65,34 @@ go get "github.com/USWS/slink"
 	   panic(err)
 	}
 
-	go func() {
-	   for {
-	      if err := Service1Invoker(&slink.InvokeParam{
-	         Method:      "method_name_1",
-	         Param:       `json string`,
-	      }, func(result string, err error) {
-	         log.Println(result, err)
-	      }, time.Second*5); err != nil {
-	         log.Println(err)
-	      }
-	      time.Sleep(time.Nanosecond)
-	   }
-	}()
+    //async invoke
+	if err := Service1Invoker(&slink.InvokeParam{
+       Method:      "method_name_1",
+       Param:       `json string`,
+    }, func(result string, err error) {
+       log.Println(result, err)
+    }, time.Second*5); err != nil {
+       log.Println(err)
+    }
+
+    //sync invoke
+    slk.SyncInvoker(Service1Invoker,&slink.InvokeParam{
+       Method:      "method_name_1",
+       Param:       `json string`,
+    }, func(result string, err error) {
+       log.Println(result, err)
+    }, time.Second*5);err != nil {
+       log.Println(err)
+    }
+
+## Subscribe & Publish
+
+    if err := slk.Subscribe("abc", func(msg []byte) {
+		log.Println(string(msg))
+	}); err != nil {
+		panic(err)
+	}
+
+    if err := dis.Publish("abc", "123"); err != nil {
+       log.Println(err)
+    }
