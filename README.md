@@ -114,13 +114,32 @@ go get "github.com/USWS/slink"
        log.Println(err)
     }
 
-    if mul, err := slk.MakeMultiSubscribe("topic"); err != nil {
+    if mul, err := slk.NewMultiSubscribe("topic"); err != nil {
        log.Println(err)
     } else {
-       mul.Subscribe(func(msg []byte) {
+       var a slink.TopicHandler = func(msg []byte) {
           log.Println(string(msg))
-       })
-       mul.Subscribe(func(msg []byte) {
-          log.Println(string(msg))
-       })
+       }
+       mul.Subscribe(&a)
+       var b slink.TopicHandler = func(msg []byte) {
+          log.Println(msg)
+       }
+       mul.Subscribe(&b)
+       _ = slk.Publish("topic", "multi")
+       mul.Unsubscribe(&a)
+       _ = slk.Publish("topic", "end")
     }
+
+    ms, _ := slk.NewMultiSubscribes([]string{
+       "topic", "topic1",
+    })
+    var a slink.TopicHandler = func(msg []byte) {
+       log.Println(string(msg))
+    }
+    ms["topic"].Subscribe(&a)
+    var b slink.TopicHandler = func(msg []byte) {
+       log.Println(string(msg))
+    }
+    ms["topic1"].Subscribe(&b)
+    _ = slk.Publish("topic", "topic")
+    _ = slk.Publish("topic1", "topic1")

@@ -407,11 +407,23 @@ func (p *SLink) Subscribe(topic string, th TopicHandler) error {
 }
 
 type MultiSubscribe struct {
-	Subscribe   func(lis TopicHandler)
-	Unsubscribe func(lis TopicHandler)
+	Subscribe   func(lis *TopicHandler)
+	Unsubscribe func(lis *TopicHandler)
 }
 
-func (p *SLink) MakeMultiSubscribe(topic string) (*MultiSubscribe, error) {
+func (p *SLink) NewMultiSubscribes(topics []string) (map[string]*MultiSubscribe, error) {
+	mss := make(map[string]*MultiSubscribe)
+	for _, v := range topics {
+		if s, err := p.NewMultiSubscribe(v); err != nil {
+			return nil, err
+		} else {
+			mss[v] = s
+		}
+	}
+	return mss, nil
+}
+
+func (p *SLink) NewMultiSubscribe(topic string) (*MultiSubscribe, error) {
 	liss := make(map[*TopicHandler]bool)
 	lock := new(sync.RWMutex)
 	if token := p.client.Subscribe(ServiceTopic+"/"+topic, 0, func(client MQTT.Client, message MQTT.Message) {
@@ -424,14 +436,14 @@ func (p *SLink) MakeMultiSubscribe(topic string) (*MultiSubscribe, error) {
 		return nil, token.Error()
 	}
 	return &MultiSubscribe{
-		Subscribe: func(lis TopicHandler) {
+		Subscribe: func(lis *TopicHandler) {
 			lock.Lock()
-			liss[&lis] = true
+			liss[lis] = true
 			lock.Unlock()
 		},
-		Unsubscribe: func(lis TopicHandler) {
+		Unsubscribe: func(lis *TopicHandler) {
 			lock.Lock()
-			delete(liss, &lis)
+			delete(liss, lis)
 			lock.Unlock()
 		},
 	}, nil
