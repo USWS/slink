@@ -17,7 +17,6 @@ const (
 	ServiceRpcUp     = "usws/rpc/up"
 	ServiceRpcIn     = "usws/rpc/in"
 	ServiceRpcOut    = "usws/rpc/out"
-	ServiceTopic     = "usws/com"
 	RecyleDuration   = time.Second * 5
 	DefaultKeepAlive = time.Second * 5
 	DefaultDeadTime  = time.Second * 15
@@ -398,7 +397,7 @@ func (p *SLink) InitRpcClient(serviceName string) (Invoker, error) {
 type TopicHandler func(msg []byte)
 
 func (p *SLink) Subscribe(topic string, th TopicHandler) error {
-	if token := p.client.Subscribe(ServiceTopic+"/"+topic, 0, func(client MQTT.Client, message MQTT.Message) {
+	if token := p.client.Subscribe(topic, 0, func(client MQTT.Client, message MQTT.Message) {
 		go th(message.Payload())
 	}); token.Wait() && token.Error() != nil {
 		return token.Error()
@@ -426,7 +425,7 @@ func (p *SLink) NewMultiSubscribes(topics []string) (map[string]*MultiSubscribe,
 func (p *SLink) NewMultiSubscribe(topic string) (*MultiSubscribe, error) {
 	liss := make(map[*TopicHandler]bool)
 	lock := new(sync.RWMutex)
-	if token := p.client.Subscribe(ServiceTopic+"/"+topic, 0, func(client MQTT.Client, message MQTT.Message) {
+	if token := p.client.Subscribe(topic, 0, func(client MQTT.Client, message MQTT.Message) {
 		lock.RLock()
 		for k, _ := range liss {
 			go (*k)(message.Payload())
@@ -450,14 +449,14 @@ func (p *SLink) NewMultiSubscribe(topic string) (*MultiSubscribe, error) {
 }
 
 func (p *SLink) Unsubscribe(topic string) error {
-	if token := p.client.Unsubscribe(ServiceTopic + "/" + topic); token.Wait() && token.Error() != nil {
+	if token := p.client.Unsubscribe(topic); token.Wait() && token.Error() != nil {
 		return token.Error()
 	}
 	return nil
 }
 
 func (p *SLink) Publish(topic string, msg string) error {
-	if token := p.client.Publish(ServiceTopic+"/"+topic, 0, false, msg); token.Wait() && token.Error() != nil {
+	if token := p.client.Publish(topic, 0, false, msg); token.Wait() && token.Error() != nil {
 		return token.Error()
 	}
 	return nil
